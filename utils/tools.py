@@ -23,7 +23,7 @@ RESTAURANT_TOOLS = [
                 "include_details": {
                     "type": "boolean",
                     "description": "메뉴 등 상세 정보 포함 여부 (기본값: false)",
-                    "default": False
+                    "default": True
                 }
             },
             "required": ["query"]
