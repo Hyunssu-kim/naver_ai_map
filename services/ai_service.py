@@ -18,7 +18,7 @@ class AIService:
         """AWS Secrets Manager에서 Claude API 키 가져오기"""
         try:
             response = self.secrets_client.get_secret_value(
-                SecretId='claude-api-key'  # Secret 이름
+                SecretId='my_dev_key'  # Secret 이름
             )
             secret = json.loads(response['SecretString'])
             return secret.get('api_key')
