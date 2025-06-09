@@ -1,17 +1,39 @@
-# Elasticsearch 연결 템플릿 - 실제 연결 코드로 교체하세요
-
 class ElasticsearchService:
     def __init__(self):
-        # TODO: EC2 Elasticsearch 연결 설정
-        # self.es = Elasticsearch([{'host': 'your-ec2-ip', 'port': 9200}])
-        self.index_name = "yeouido_restaurants"
-    
+
+        self.secrets_client = boto3.client('secretsmanager')
+        elastic_config = self._get_elastic_config()
+        self.es_client = Elasticsearch(
+            f"http://{elastic_config['host']}:{elastic_config.get('port', 9200)}",
+            http_auth=(elastic_config['username'], elastic_config['password'])
+        )
+        self.index_name = "restaurants"
+
+    def _get_elastic_config(self):
+        response = self.secrets_client.get_secret_value(
+            SecretId='my_dev_key'
+        )
+        secret = json.loads(response['SecretString'])
+
+        required_fields = ['elastic_ip', 'elastic_port', 'elastic_username', 'elastic_password']
+        for field in required_fields:
+            if not secret.get(field):
+                raise ValueError(f"Secret에서 {field}를 찾을 수 없습니다")
+
+        elastic_config = {
+            'host': secret['elastic_ip'],
+            'port': secret.get('elastic_port', 9200),
+            'username': secret['elastic_username'],
+            'password': secret['elastic_password']
+        }
+        return elastic_config
+
     def search(self, query):
         """엘라스틱서치 검색 - TEMP"""
         # TODO: 실제 ES 검색 구현
-        # result = self.es.search(index=self.index_name, body=query)
-        # return self._format_results(result)
-        
+        result = self.es.search(index=self.index_name, body=query)
+        return self._format_results(result)
+
         # 임시 더미 데이터
         return {
             "total": 3,
@@ -25,7 +47,7 @@ class ElasticsearchService:
                     "phone": "02-1234-5678"
                 },
                 {
-                    "id": "2", 
+                    "id": "2",
                     "name": "IFC 이탈리안",
                     "food_type": "이탈리안",
                     "rating": 4.2,
@@ -34,20 +56,8 @@ class ElasticsearchService:
                 }
             ]
         }
-    
-    def get_by_id(self, restaurant_id):
-        """ID로 맛집 조회 - TEMP"""
-        # TODO: 실제 ES get 구현
-        # return self.es.get(index=self.index_name, id=restaurant_id)
-        
-        return {
-            "id": restaurant_id,
-            "name": "여의도 맛집",
-            "description": "맛있는 음식점입니다",
-            "rating": 4.3,
-            "reviews": ["맛있어요", "서비스 좋아요"]
-        }
-    
+
+
     def _format_results(self, es_result):
         """ES 결과 포맷팅"""
         return {

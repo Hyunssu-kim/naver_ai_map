@@ -1,35 +1,44 @@
-"""
-AI용 식당 검색 함수들
-Elasticsearch 기반 여의도 식당 검색 시스템
-"""
-
 import json
 from typing import Dict, List, Any, Optional, Union
 from elasticsearch import Elasticsearch
 from datetime import datetime
+import boto3
 
 
 class RestaurantSearchAI:
-    """
-    AI가 사용할 수 있는 식당 검색 클래스
-    """
-    
+
     def __init__(self, es_host: str = "localhost", es_port: int = 9200, index_name: str = "restaurants"):
-        """
-        Elasticsearch 연결 초기화
-        
-        Args:
-            es_host: Elasticsearch 호스트
-            es_port: Elasticsearch 포트
-            index_name: 인덱스 이름
-        """
-        self.es_client = Elasticsearch([f"{es_host}:{es_port}"])
+        self.secrets_client = boto3.client('secretsmanager')
+        elastic_config = self._get_elastic_config()
+        self.es_client = Elasticsearch(
+            f"http://{elastic_config['host']}:{elastic_config.get('port', 9200)}",
+            http_auth=(elastic_config['username'], elastic_config['password'])
+        )
         self.index_name = index_name
-    
+
+    def _get_elastic_config(self):
+        response = self.secrets_client.get_secret_value(
+            SecretId='my_dev_key'
+        )
+        secret = json.loads(response['SecretString'])
+
+        required_fields = ['elastic_ip','elastic_port', 'elastic_username', 'elastic_password']
+        for field in required_fields:
+            if not secret.get(field):
+                raise ValueError(f"Secret에서 {field}를 찾을 수 없습니다")
+        
+        elastic_config = {
+            'host': secret['elastic_ip'],
+            'port': secret.get('elastic_port', 9200),
+            'username': secret['elastic_username'],
+            'password': secret['elastic_password']
+        }
+        return elastic_config
+
     def search_restaurants(
         self, 
         query: str, 
-        limit: int = 10,
+        limit: int = 3,
         include_details: bool = False
     ) -> Dict[str, Any]:
         """
@@ -37,7 +46,7 @@ class RestaurantSearchAI:
         
         Args:
             query: 검색어 (예: "중식당", "갈비찜", "매운 음식")
-            limit: 결과 개수 제한 (기본 10개)
+            limit: 결과 개수 제한 (기본 3개)
             include_details: 상세 정보 포함 여부 (메뉴, 가격 등)
         
         Returns:
@@ -121,7 +130,7 @@ class RestaurantSearchAI:
                         "minimum_should_match": 1
                     }
                 },
-                "_source": ["name", "category", "menu", "restaurant_id"] if include_details else ["name", "category"],
+                "_source": ["name", "category", "menu", "restaurant_id", "images"] if include_details else ["name", "category", "images"],
                 "size": limit
             }
             
@@ -141,6 +150,10 @@ class RestaurantSearchAI:
                     restaurant['menu'] = hit['_source']['menu']
                     restaurant['menu_count'] = len(hit['_source']['menu'])
                 
+                # 이미지 정보 추가 (최대 5개)
+                if 'images' in hit['_source']:
+                    restaurant['images'] = hit['_source']['images'][:5]
+                
                 results.append(restaurant)
             
             return {
@@ -158,7 +171,7 @@ class RestaurantSearchAI:
                 "query": query
             }
     
-    def search_by_category(self, category: str, limit: int = 10) -> Dict[str, Any]:
+    def search_by_category(self, category: str, limit: int = 4) -> Dict[str, Any]:
         """
         🏷️ 카테고리별 식당 검색
         
@@ -179,7 +192,7 @@ class RestaurantSearchAI:
                         ]
                     }
                 },
-                "_source": ["name", "category"],
+                "_source": ["name", "category", "menu", "images"],
                 "size": limit
             }
             
@@ -187,11 +200,22 @@ class RestaurantSearchAI:
             
             results = []
             for hit in response['hits']['hits']:
-                results.append({
+                restaurant_data = {
                     "name": hit['_source']['name'],
                     "category": hit['_source']['category'],
                     "score": round(hit['_score'], 2)
-                })
+                }
+                
+                # 메뉴 정보 추가
+                if 'menu' in hit['_source']:
+                    restaurant_data['menu'] = hit['_source']['menu']
+                    restaurant_data['menu_count'] = len(hit['_source']['menu'])
+                
+                # 이미지 정보 추가 (최대 5개)
+                if 'images' in hit['_source']:
+                    restaurant_data['images'] = hit['_source']['images'][:5]
+                
+                results.append(restaurant_data)
             
             return {
                 "total": response['hits']['total']['value'],
@@ -202,7 +226,7 @@ class RestaurantSearchAI:
         except Exception as e:
             return {"error": str(e), "total": 0, "results": []}
     
-    def search_by_menu(self, menu_keyword: str, limit: int = 10) -> Dict[str, Any]:
+    def search_by_menu(self, menu_keyword: str, limit: int = 3) -> Dict[str, Any]:
         """
         🍽️ 메뉴명으로 식당 검색
         
@@ -242,7 +266,7 @@ class RestaurantSearchAI:
                         }
                     }
                 },
-                "_source": ["name", "category"],
+                "_source": ["name", "category", "menu", "images"],
                 "size": limit
             }
             
@@ -266,6 +290,15 @@ class RestaurantSearchAI:
                             "price": menu_source.get('price', '')
                         })
                 
+                # 전체 메뉴 정보도 추가 (최소 5개 확보)
+                if 'menu' in hit['_source']:
+                    restaurant['menu'] = hit['_source']['menu']
+                    restaurant['menu_count'] = len(hit['_source']['menu'])
+                
+                # 이미지 정보 추가 (최대 5개)
+                if 'images' in hit['_source']:
+                    restaurant['images'] = hit['_source']['images'][:5]
+                
                 results.append(restaurant)
             
             return {
@@ -281,7 +314,7 @@ class RestaurantSearchAI:
         self, 
         min_price: Optional[int] = None, 
         max_price: Optional[int] = None,
-        limit: int = 10
+        limit: int = 32
     ) -> Dict[str, Any]:
         """
         💰 가격대별 식당/메뉴 검색
@@ -319,7 +352,7 @@ class RestaurantSearchAI:
                         }
                     }
                 },
-                "_source": ["name", "category"],
+                "_source": ["name", "category", "menu", "images"],
                 "size": limit
             }
             
@@ -343,6 +376,15 @@ class RestaurantSearchAI:
                             "price": menu_source.get('price', ''),
                             "price_numeric": menu_source.get('price_numeric', 0)
                         })
+                
+                # 전체 메뉴 정보도 추가 (최소 5개 확보)
+                if 'menu' in hit['_source']:
+                    restaurant['menu'] = hit['_source']['menu']
+                    restaurant['menu_count'] = len(hit['_source']['menu'])
+                
+                # 이미지 정보 추가 (최대 5개)
+                if 'images' in hit['_source']:
+                    restaurant['images'] = hit['_source']['images'][:5]
                 
                 results.append(restaurant)
             
@@ -452,7 +494,7 @@ class RestaurantSearchAI:
         except Exception as e:
             return {"error": str(e)}
     
-    def recommend_similar_restaurants(self, restaurant_name: str, limit: int = 5) -> Dict[str, Any]:
+    def recommend_similar_restaurants(self, restaurant_name: str, limit: int = 3) -> Dict[str, Any]:
         """
         🎯 유사한 식당 추천
         
@@ -483,7 +525,7 @@ class RestaurantSearchAI:
                         ]
                     }
                 },
-                "_source": ["name", "category"],
+                "_source": ["name", "category", "images"],
                 "size": limit
             }
             
@@ -491,11 +533,17 @@ class RestaurantSearchAI:
             
             recommendations = []
             for hit in response['hits']['hits']:
-                recommendations.append({
+                recommendation = {
                     "name": hit['_source']['name'],
                     "category": hit['_source']['category'],
                     "similarity_reason": f"같은 카테고리 ({base_category})"
-                })
+                }
+                
+                # 이미지 정보 추가 (최대 5개)
+                if 'images' in hit['_source']:
+                    recommendation['images'] = hit['_source']['images'][:5]
+                
+                recommendations.append(recommendation)
             
             return {
                 "base_restaurant": restaurant_name,
@@ -508,7 +556,6 @@ class RestaurantSearchAI:
             return {"error": str(e), "restaurant_name": restaurant_name}
 
 
-# 기존 코드와의 호환성을 위한 래퍼 클래스
 class RestaurantService:
     def __init__(self, es_host="localhost", es_port=9200):
         self.search_ai = RestaurantSearchAI(es_host=es_host, es_port=es_port)
@@ -517,6 +564,9 @@ class RestaurantService:
         """AI 판단에 따라 적절한 검색 메소드 실행"""
         action = ai_response.get('action')
         params = ai_response.get('params', {})
+
+        if 'include_details' not in params and action == 'search_restaurants':
+            params['include_details'] = True
         
         if action == 'search_restaurants':
             return self.search_ai.search_restaurants(**params)
@@ -533,6 +583,5 @@ class RestaurantService:
         elif action == 'recommend_similar_restaurants':
             return self.search_ai.recommend_similar_restaurants(**params)
         else:
-            # 기본 검색 (하위 호환성)
             query = params.get('keyword', params.get('query', '맛집'))
-            return self.search_ai.search_restaurants(query=query)
+            return self.search_ai.search_restaurants(query=query, include_details=True)
